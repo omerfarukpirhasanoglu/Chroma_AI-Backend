@@ -13,6 +13,7 @@ from contextlib import asynccontextmanager
 from concurrent.futures import ThreadPoolExecutor
 import asyncio
 import onnxruntime as ort
+import gc
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -451,16 +452,13 @@ async def analyze_image(file: UploadFile = File(...)):
 
     try:
         loop = asyncio.get_event_loop()
-
-        img_tensor_task  = loop.run_in_executor(executor, prepare_for_model, icerik)
-        renk_analiz_task = loop.run_in_executor(executor, run_color_analysis, icerik)
-        img_tensor, renk_sonucu = await asyncio.gather(img_tensor_task, renk_analiz_task)
-
+        
         baslangic = time.perf_counter()
-        tahminler = await loop.run_in_executor(executor, run_inference, img_tensor)
-        bitis     = time.perf_counter()
-        cikarim_suresi_ms = round((bitis - baslangic) * 1000, 2)
 
+        # 1. AŞAMA: Sadece model için tensör hazırlığı ve çıkarım
+        img_tensor = await loop.run_in_executor(executor, prepare_for_model, icerik)
+        tahminler = await loop.run_in_executor(executor, run_inference, img_tensor)
+        
         tahmin_dizisi   = tahminler[0]
         top_k           = min(3, len(tahmin_dizisi))
         en_iyi_indexler = np.argsort(tahmin_dizisi)[-top_k:][::-1]
@@ -472,6 +470,15 @@ async def analyze_image(file: UploadFile = File(...)):
             }
             for i in en_iyi_indexler
         ]
+
+        del img_tensor 
+        del tahminler
+        gc.collect() 
+
+        renk_sonucu = await loop.run_in_executor(executor, run_color_analysis, icerik)
+
+        bitis = time.perf_counter()
+        cikarim_suresi_ms = round((bitis - baslangic) * 1000, 2)
 
         logger.info(
             f"Analiz tamamlandi | stil={stil_listesi[0]['stil']} "
