@@ -218,43 +218,43 @@ def _renk_uyum_turu(dominant_colors_rgb: np.ndarray) -> dict:
 
     if hue_std < 20:
         return {
-            "tür": "Monokromatik",
-            "açıklama": "Tüm renkler aynı ton ailesinden, sadece parlaklık/doygunluk değişiyor.",
+            "tur": "Monokromatik",
+            "aciklama": "Tüm renkler aynı ton ailesinden, sadece parlaklık/doygunluk değişiyor.",
             "skor": 92.0,
         }
     if ort_fark < 40:
         return {
-            "tür": "Analog",
-            "açıklama": "Renkler renk çemberinde birbirine yakın; yumuşak ve uyumlu bir görünüm.",
+            "tur": "Analog",
+            "aciklama": "Renkler renk çemberinde birbirine yakın; yumuşak ve uyumlu bir görünüm.",
             "skor": 88.0,
         }
     if 160.0 <= max_fark <= 200.0:
         return {
-            "tür": "Komplementer",
-            "açıklama": "Zıt renkler bir arada; güçlü kontrast ve dikkat çekici bir etki.",
+            "tur": "Komplementer",
+            "aciklama": "Zıt renkler bir arada; güçlü kontrast ve dikkat çekici bir etki.",
             "skor": 78.0,
         }
     if 130.0 <= max_fark < 160.0:
         return {
-            "tür": "Split-Komplementer",
-            "açıklama": "Bir renk ve onun komplementerinin iki yanı; kontrastlı ama dengeli.",
+            "tur": "Split-Komplementer",
+            "aciklama": "Bir renk ve onun komplementerinin iki yanı; kontrastlı ama dengeli.",
             "skor": 80.0,
         }
     if 100.0 <= max_fark <= 140.0 and len(renkli) >= 3:
         return {
-            "tür": "Triadik",
-            "açıklama": "Renk çemberinde eşit aralıklı üç renk; canlı ve dengeli bir palet.",
+            "tur": "Triadik",
+            "aciklama": "Renk çemberinde eşit aralıklı üç renk; canlı ve dengeli bir palet.",
             "skor": 75.0,
         }
     if 60.0 <= ort_fark < 100.0:
         return {
-            "tür": "Yarı-Komplementer",
-            "açıklama": "Renkler belirgin kontrast oluşturuyor; dikkat çekici ama tam zıt değil.",
+            "tur": "Yarı-Komplementer",
+            "aciklama": "Renkler belirgin kontrast oluşturuyor; dikkat çekici ama tam zıt değil.",
             "skor": 68.0,
         }
     return {
-        "tür": "Karma / Çok Renkli",
-        "açıklama": "Farklı ton ailelerinden renkler bir arada; özgün ve ifadeli bir kombin.",
+        "tur": "Karma / Çok Renkli",
+        "aciklama": "Farklı ton ailelerinden renkler bir arada; özgün ve ifadeli bir kombin.",
         "skor": 60.0,
     }
 
@@ -401,8 +401,8 @@ def analyze_colors(image_bytes: bytes, n_colors: int = 5) -> dict:
             "notr_oran":        notr_oran,
         },
         "uyum_analizi": {
-            "tür":      uyum["tür"],
-            "açıklama": uyum["açıklama"],
+            "tur":      uyum["tur"],
+            "aciklama": uyum["aciklama"],
             "skor":     uyum["skor"],
         },
         "stil_tahmini": sezon,
