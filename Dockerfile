@@ -12,7 +12,6 @@ RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
 COPY main.py .
-COPY Chroma.py .
 COPY saved_model/ ./saved_model/
 
 EXPOSE 7860
