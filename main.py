@@ -14,7 +14,6 @@ from concurrent.futures import ThreadPoolExecutor
 import asyncio
 import onnxruntime as ort
 import gc
-
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -94,12 +93,14 @@ class AnalizSonucu(BaseModel):
 # GLOBAL DEĞİŞKENLER
 model       = None
 class_names = []
-executor    = ThreadPoolExecutor(max_workers=1)
+executor    = ThreadPoolExecutor(max_workers=2)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global model, class_names
+
+    get_rembg_session()
 
     if os.path.exists(CLASS_NAMES_PATH):
         with open(CLASS_NAMES_PATH, "r") as f:
@@ -192,72 +193,193 @@ def get_color_name(rgb):
     return f"#{r:02x}{g:02x}{b:02x}"
 
 
+def _golge_filtrele(renkli_hsv: list) -> list:
+    if len(renkli_hsv) <= 1:
+        return renkli_hsv
+
+    kaldir = set()
+    for i in range(len(renkli_hsv)):
+        for j in range(i + 1, len(renkli_hsv)):
+            hi, si, vi = renkli_hsv[i]
+            hj, sj, vj = renkli_hsv[j]
+            hue_fark = abs(hi - hj)
+            hue_fark = min(hue_fark, 360.0 - hue_fark)
+            bri_fark = abs(vi - vj)
+            if hue_fark < 25 and bri_fark > 55:
+                if vi < vj:
+                    kaldir.add(i)
+                else:
+                    kaldir.add(j)
+
+    return [r for idx, r in enumerate(renkli_hsv) if idx not in kaldir]
+
+
 def _renk_uyum_turu(dominant_colors_rgb: np.ndarray) -> dict:
-    renkli = []
+    # HSV değerlerini çıkar
+    tum_hsv = []
     for rgb in dominant_colors_rgb:
         pixel = np.uint8([[rgb]])
         hsv = cv2.cvtColor(pixel, cv2.COLOR_RGB2HSV)[0][0]
-        if not _notr_mu(hsv):
-            renkli.append(float(hsv[0]) * 2.0)
+        tum_hsv.append((float(hsv[0]) * 2.0, float(hsv[1]), float(hsv[2]), _notr_mu(hsv)))
 
-    if len(renkli) < 2:
-        return {
-            "tür": "Monokromatik / Nötr",
-            "açıklama": "Baskın renkler nötr tonlardan oluşuyor (siyah, beyaz, gri).",
-            "skor": 85.0,
-        }
+    renkli_hsv_ham = [(h, s, v) for h, s, v, notr in tum_hsv if not notr]
+    notr_sayisi    = sum(1 for *_, notr in tum_hsv if notr)
+    toplam         = len(tum_hsv)
 
-    farklar = []
-    for i in range(len(renkli)):
-        for j in range(i + 1, len(renkli)):
-            fark = abs(renkli[i] - renkli[j])
-            farklar.append(min(fark, 360.0 - fark))
+    # Gölgeleri filtrele
+    renkli_hsv = _golge_filtrele(renkli_hsv_ham)
 
-    ort_fark = float(np.mean(farklar))
-    max_fark = float(np.max(farklar))
-    hue_std  = float(np.std(renkli))
+    # Tür tespiti
+    if len(renkli_hsv) < 2:
+        tur = "Monokromatik / Nötr"
+        ort_fark = hue_std = 0.0
+    else:
+        hue_vals = [h for h, s, v in renkli_hsv]
+        farklar = []
+        for i in range(len(hue_vals)):
+            for j in range(i + 1, len(hue_vals)):
+                fark = abs(hue_vals[i] - hue_vals[j])
+                farklar.append(min(fark, 360.0 - fark))
+        ort_fark = float(np.mean(farklar))
+        max_fark = float(np.max(farklar))
+        hue_std  = float(np.std(hue_vals))
 
-    if hue_std < 20:
-        return {
-            "tur": "Monokromatik",
-            "aciklama": "Tüm renkler aynı ton ailesinden, sadece parlaklık/doygunluk değişiyor.",
-            "skor": 92.0,
-        }
-    if ort_fark < 40:
-        return {
-            "tur": "Analog",
-            "aciklama": "Renkler renk çemberinde birbirine yakın; yumuşak ve uyumlu bir görünüm.",
-            "skor": 88.0,
-        }
-    if 160.0 <= max_fark <= 200.0:
-        return {
-            "tur": "Komplementer",
-            "aciklama": "Zıt renkler bir arada; güçlü kontrast ve dikkat çekici bir etki.",
-            "skor": 78.0,
-        }
-    if 130.0 <= max_fark < 160.0:
-        return {
-            "tur": "Split-Komplementer",
-            "aciklama": "Bir renk ve onun komplementerinin iki yanı; kontrastlı ama dengeli.",
-            "skor": 80.0,
-        }
-    if 100.0 <= max_fark <= 140.0 and len(renkli) >= 3:
-        return {
-            "tur": "Triadik",
-            "aciklama": "Renk çemberinde eşit aralıklı üç renk; canlı ve dengeli bir palet.",
-            "skor": 75.0,
-        }
-    if 60.0 <= ort_fark < 100.0:
-        return {
-            "tur": "Yarı-Komplementer",
-            "aciklama": "Renkler belirgin kontrast oluşturuyor; dikkat çekici ama tam zıt değil.",
-            "skor": 68.0,
-        }
-    return {
-        "tur": "Karma / Çok Renkli",
-        "aciklama": "Farklı ton ailelerinden renkler bir arada; özgün ve ifadeli bir kombin.",
-        "skor": 60.0,
-    }
+        if hue_std < 20:
+            tur = "Monokromatik"
+        elif ort_fark < 40:
+            tur = "Analog"
+        elif 160.0 <= max_fark <= 200.0:
+            tur = "Komplementer"
+        elif 130.0 <= max_fark < 160.0:
+            tur = "Split-Komplementer"
+        elif 100.0 <= max_fark <= 140.0 and len(renkli_hsv) >= 3:
+            tur = "Triadik"
+        elif 60.0 <= ort_fark < 100.0:
+            tur = "Yarı-Komplementer"
+        else:
+            tur = "Karma / Çok Renkli"
+
+    # Doygunluk tutarlılığı
+    if len(renkli_hsv) >= 2:
+        sat_vals = [s for h, s, v in renkli_hsv]
+        sat_std  = float(np.std(sat_vals))
+        doygunluk_skoru = max(0.0, 100.0 - (sat_std / 80.0) * 100.0)
+    else:
+        doygunluk_skoru = 80.0
+
+    #  Parlaklık hiyerarşisi
+    bri_vals = [v for h, s, v, notr in tum_hsv]
+    bri_fark = max(bri_vals) - min(bri_vals)
+    if bri_fark < 30:
+        parlaklik_skoru = 40.0
+    elif bri_fark < 80:
+        parlaklik_skoru = 70.0
+    elif bri_fark < 160:
+        parlaklik_skoru = 95.0
+    else:
+        parlaklik_skoru = 75.0
+
+    #  Renk yoğunluğu
+    renkli_sayisi = len(renkli_hsv)
+    if renkli_sayisi <= 1:
+        yogunluk_skoru = 92.0
+    elif renkli_sayisi == 2:
+        yogunluk_skoru = 88.0
+    elif renkli_sayisi == 3:
+        yogunluk_skoru = 80.0
+    elif renkli_sayisi == 4:
+        yogunluk_skoru = 65.0
+    else:
+        yogunluk_skoru = 45.0
+
+    # Nötr tampon bonusu
+    notr_oran = notr_sayisi / max(toplam, 1)
+    if notr_oran >= 0.4:
+        notr_bonus = 20.0
+    elif notr_oran >= 0.2:
+        notr_bonus = 12.0
+    elif notr_oran > 0:
+        notr_bonus = 6.0
+    else:
+        notr_bonus = 0.0
+
+    # Genel skor
+    ham_skor = (
+        doygunluk_skoru * 0.30 +
+        parlaklik_skoru * 0.25 +
+        yogunluk_skoru  * 0.25 +
+        notr_bonus
+    )
+    skor = round(max(5.0, min(100.0, ham_skor)), 1)
+
+    aciklama = _uyum_aciklamasi(tur, skor, doygunluk_skoru, parlaklik_skoru, yogunluk_skoru, notr_bonus)
+    return {"tur": tur, "aciklama": aciklama, "skor": skor}
+
+
+def _uyum_aciklamasi(
+    tur: str,
+    skor: float,
+    doygunluk_skoru: float,
+    parlaklik_skoru: float,
+    yogunluk_skoru: float,
+    notr_bonus: float,
+) -> str:
+
+    zayif = min(
+        [("doygunluk", doygunluk_skoru),
+         ("parlaklik", parlaklik_skoru),
+         ("yogunluk",  yogunluk_skoru)],
+        key=lambda x: x[1]
+    )[0]
+
+    if zayif == "yogunluk" and tur != "Karma / Çok Renkli":
+        zayif = min(
+            [("doygunluk", doygunluk_skoru),
+             ("parlaklik",  parlaklik_skoru)],
+            key=lambda x: x[1]
+        )[0]
+
+    if skor >= 82:
+        if notr_bonus >= 12:
+            return "Nötr tonlar paleti mükemmel dengelemiş. Güçlü bir zemin üzerine oturmuş, bakışı yönlendiren bir kombin."
+        if tur in ("Monokromatik", "Analog"):
+            return "Tonlar arasındaki geçiş akıcı ve kasıtlı görünüyor. Göz dinleniyor, palet kendinden emin konuşuyor."
+        if tur == "Komplementer":
+            return "Zıt renkler ustaca dengelenmiş. Bu kontrast göz yormuyor, tam tersi paleti güçlendiriyor."
+        if tur == "Split-Komplementer":
+            return "Zıt rengin iki yanı dengeli tutulmuş. Kontrastlı ama sınırda değil, göz rahat geziniyor."
+        if tur == "Triadik":
+            return "Üç renk eşit ağırlıkta dağıtılmış. Bu cesaret isteyen bir seçim ve karşılığını almış."
+        return "Palet dengeli ve okunaklı. Renkler birbirini bastırmıyor, her biri yerli yerinde duruyor."
+
+    elif skor >= 65:
+        if zayif == "doygunluk":
+            return "Palet genel olarak iyi ama renkler benzer canlılıkta değil. Biri öne çıkarken diğerleri soluklaşıyor."
+        if zayif == "parlaklik":
+            return "Renk seçimi makul ama açık-koyu dengesi henüz oturmamış. Biraz daha net bir hiyerarşi kombini güçlendirir."
+        if zayif == "yogunluk":
+            return "Çok sayıda renk dikkat dağıtmaya başlıyor. İki veya üç renge odaklanmak paleti çok daha güçlü kılar."
+        return "İyi bir başlangıç noktası ama palet biraz daha sadeleştirilebilir. Küçük değişiklikler büyük fark yaratır."
+
+    elif skor >= 45:
+        if zayif == "doygunluk":
+            return "Renkler arasındaki canlılık farkı kombini dengesiz kılıyor. Hepsi aynı yoğunlukta olsaydı çok daha iyi görünürdü."
+        if zayif == "parlaklik":
+            return "Parlaklık farkları ya çok az ya da çok fazla. Kasıtlı bir kontrast kurmadan bu ara değerler paleti muğlak bırakıyor."
+        if zayif == "yogunluk":
+            return "Bu kadar farklı renk aynı anda pek çalışmıyor. Baskın iki renk seç, diğerlerini aksan olarak kullan."
+        return "Palet bir yere varmaya çalışıyor ama henüz varmamış. Biraz daha odaklı bir seçim işe yarar."
+
+    else:
+        if zayif == "doygunluk":
+            return "Renkler çok farklı canlılık seviyelerinde ve bu kombinasyonu dağınık gösteriyor. Palet bir bütün olarak okunmuyor."
+        if zayif == "parlaklik":
+            return "Parlaklık dengesi kurulamamış. Renkler birbirini ne tamamlıyor ne de kasıtlı bir kontrast oluşturuyor."
+        if zayif == "yogunluk":
+            return "Çok fazla renk aynı anda konuşuyor ve hiçbiri duyulmuyor. Bu kombinasyondan iki rengi çıkarmak her şeyi değiştirir."
+        return "Palet şu haliyle birbirine bağlı bir bütün oluşturmuyor. Daha az renkle daha güçlü bir sonuç mümkün."
+
+
 
 
 def _sezon_tahmini(avg_saturation: float, avg_brightness: float, hue_std: float) -> str:
@@ -265,16 +387,16 @@ def _sezon_tahmini(avg_saturation: float, avg_brightness: float, hue_std: float)
     bri_norm = avg_brightness / 255.0
 
     if sat_norm < 0.15 and bri_norm > 0.6:
-        return "Minimalist / Söylemeden anlatır, fark edilmek için çabalamaz."
+        return "Kış tonları"
     if sat_norm < 0.25 and bri_norm < 0.45:
-        return "Sonbahar / Sıcak ve köklü enerji. İnsanı içine çeken, rahatlatıcı bir his taşır."
+        return "Sonbahar tonları"
     if sat_norm > 0.55 and bri_norm > 0.55:
-        return "Yaz / Tam anlamıyla dışa dönük. Neşeyi çevreye yayar, göz ardı edilemez bir canlılık sağlar."
+        return "Yaz tonları"
     if sat_norm > 0.35 and bri_norm > 0.5 and hue_std > 25:
-        return "İlkbahar / Hafif ve uyanık. Ferahlatıcı, yanında olmayı keyifli kılar."
+        return "İlkbahar tonları"
     if bri_norm > 0.65 and sat_norm < 0.4:
-        return "Bahar / Narin ama kalıcı. Kibar bir aura yaratır."
-    return "Sakin, silinmez ve her zaman yerinde hissettiren bir dengesi var."
+        return "Narin tonlar"
+    return "Çok renkli tonlar"
 
 
 _rembg_session = None
@@ -283,7 +405,7 @@ def get_rembg_session():
     global _rembg_session
     if _rembg_session is None:
         from rembg import new_session
-        _rembg_session = new_session("u2netp")
+        _rembg_session = new_session("u2net")
     return _rembg_session
 
 
@@ -300,7 +422,7 @@ def _rembg_mask(image_bytes: bytes) -> tuple[np.ndarray, np.ndarray]:
 
     img_rgb = cv2.resize(img_rgb, (200, 200))
     alpha   = cv2.resize(alpha,   (200, 200))
-    mask    = (alpha > 10).astype(np.uint8) * 255
+    mask    = (alpha > 30).astype(np.uint8) * 255
 
     return img_rgb, mask
 
@@ -451,7 +573,7 @@ async def analyze_image(file: UploadFile = File(...)):
         raise HTTPException(status_code=413, detail=f"Maksimum dosya boyutu: {MAX_FILE_SIZE_MB}MB")
 
     try:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         
         baslangic = time.perf_counter()
 
