@@ -92,6 +92,7 @@ class AnalizSonucu(BaseModel):
 
 # GLOBAL DEĞİŞKENLER
 model       = None
+_rembg_session = None
 class_names = []
 executor    = ThreadPoolExecutor(max_workers=2)
 
@@ -398,8 +399,6 @@ def _sezon_tahmini(avg_saturation: float, avg_brightness: float, hue_std: float)
         return "Narin tonlar"
     return "Çok renkli tonlar"
 
-
-_rembg_session = None
 
 def get_rembg_session():
     global _rembg_session
